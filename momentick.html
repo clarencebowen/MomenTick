@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>MomenTick</title>
+<script src="https://d3js.org/d3.v3.min.js" charset="utf-8"></script>
+<style>
+	svg {
+		font: 10px sans-serif;
+	}
+
+	.area {
+		fill: steelblue;
+		clip-path: url(#clip);
+	}
+
+	.axis path,
+	.axis line {
+		fill: none;
+		stroke: #000;
+		shape-rendering: crispEdges;
+	}
+
+	.axis text {
+		font-family: sans-serif;
+		font-size: 1.2em;
+	}
+
+	div.summary {margin-left: 40px;
+		font-family: sans-serif;
+		margin-top: 10px;
+		font-size: 1.5em;
+	}
+				
+	.brush .extent {
+		stroke: #fff;
+		fill-opacity: .125;
+		shape-rendering: crispEdges;
+	}
+
+	.line {
+		fill: none;
+		stroke: steelblue;
+		stroke-width: 2px;
+		clip-path: url(#clip);
+	}
+
+	.overlay {
+		fill: none;
+		pointer-events: all;
+	}
+
+	.focus circle {
+		fill: steelblue;
+		stroke: steelblue;
+	}
+
+	table {
+		border-collapse: collapse;
+	}
+
+	table, th, td {
+		border: 1px solid black;
+		padding: 2px;
+	}
+
+	table.summary td.stats {
+	  text-align: right;
+	}
+</style>
+</head>
+<body>
+<script>
+
+function formatTime(d){
+	hours = d.datetime.getHours()	
+	ampm = (hours < 12)?"AM":"PM";
+
+	hours =  hours % 12
+	hours = hours ? hours : 12; 
+
+	minutes = d.datetime.getMinutes()		
+	minutes =  minutes < 10? "0" + minutes : minutes;
+
+	return hours + ":" + minutes + " " + ampm
+}
+
+function roundN(x, n){
+	return Math.round(((x) + 0.00001) * Math.pow(10,n)) / Math.pow(10,n) 
+}
+
+/* 
+	get number of times ticker price moved up, down or remained flat
+	updown array is composed of only 0,1,-1
+*/
+function updownCount(search){
+	return updown.reduce(function(n, val) {
+		return n + (val === search);
+	}, 0);
+}
+
+// get maximumn consecutive count of "tgt" (1,0,-1) in updown ticker price array
+function maxStreakCount(tgt){
+	maxLength = 0;
+	tempLength = 0;
+
+	for (i = 0; i < updown.length; i++) {
+		if (updown[i] == tgt) {
+			tempLength++;
+		} else {
+			tempLength = 0;
+		}
+
+		if (tempLength > maxLength) {
+			maxLength = tempLength;
+		}
+	}
+	return maxLength;
+}
+
+// set up dimensions
+var margin = {top: 10, right: 10, bottom: 100, left: 40},
+	margin2 = {top: 430, right: 10, bottom: 20, left: 40},
+	width = 960 - margin.left - margin.right,
+	height = 500 - margin.top - margin.bottom,
+	height2 = 500 - margin2.top - margin2.bottom;
+
+var formatDate = d3.time.format("%Y-%m-%d %X"),
+	monthDayFormat = d3.time.format("%b %d"),
+	bisectDate = d3.bisector(function(d) { return d.datetime; }).left,
+    formatValue = d3.format(",.2f"),
+    formatCurrency = function(d) { return "$" + formatValue(d); };
+
+// create scale objects
+var x = d3.time.scale().range([0, width]),
+    x2 = d3.time.scale().range([0, width]),
+    y = d3.scale.linear().range([height, 0]),
+    y2 = d3.scale.linear().range([height2, 0]);
+
+var xAxis = d3.svg.axis().scale(x).orient("bottom"),
+    xAxis2 = d3.svg.axis().scale(x2).orient("bottom"),
+    yAxis = d3.svg.axis().scale(y).orient("left");
+
+var area = d3.svg.area()
+    .x(function(d) { return x2(d.datetime); })
+    .y0(height2)
+    .y1(function(d) { return y2(d.price); });
+
+var title = d3.select("body")
+	.append("div")
+	.attr("width", width)
+	.attr("height", height)
+	.append("g")
+	.attr("transform", "translate(" + margin2.left + "," + margin.top + ")")
+	.append("text")
+	.attr("x", (width / 2))             
+	.attr("y", 0 - (margin.top / 2))
+	.attr("text-anchor", "middle")  
+	.style("font-size", "16px") 
+	.style("text-decoration", "underline");
+
+// create canvas
+var svg = d3.select("body").append("svg")
+    .attr("width", width + margin.left + margin.right)
+    .attr("height", height + margin.top + margin.bottom);
+
+// clip line within canvas
+svg.append("defs").append("clipPath")
+	.attr("id", "clip")
+	.append("rect")
+	.attr("width", width)
+	.attr("height", height);
+
+// grouping element used to contain the line (top) graph
+var focus = svg.append("g")
+    .attr("class", "focus")
+    .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+// grouping element used to contain info dashed-line (stock quote and time)
+var focus2 = svg.append("g")
+    .attr("class", "focus")
+    .attr("transform", "translate(" + margin.left + "," + margin.top + ")")
+	.style("display", "none");
+
+// grouping element to contain the bottom graph
+var context = svg.append("g")
+    .attr("class", "context")
+    .attr("transform", "translate(" + margin2.left + "," + margin2.top + ")");
+
+var summary = d3.select("body")
+	.append("div")
+	.attr("class", "summary")
+	.append("text").html("<h2>Touch and Drag Bottom Chart for Intra-Day Analysis</h2>");
+
+var line = d3.svg.line()
+	.x(function(d) { return x(d.datetime); })
+	.y(function(d) { return y(d.price); });
+
+// get latest intraday ticker data
+d3.tsv("quotedata.tsv", type, function(error, data) {
+
+	var brush = d3.svg.brush()
+		.x(x2)
+		.on("brushend", pan);
+	
+	x.domain(d3.extent(data.slice(data.length-390,data.length).map(function(d) { return d.datetime; })));
+	y.domain(d3.extent(data.slice(data.length-390,data.length), function(d) { return d.price; }));
+	x2.domain(x.domain());
+	y2.domain(y.domain());
+
+	focus.append("path")
+		.datum(data.slice(data.length-390,data.length))
+		.attr("class", "line")
+		.attr("d", line);
+				  
+	focus.append("g")
+		.attr("class", "x axis")
+		.attr("transform", "translate(0," + height + ")")
+		.call(xAxis);
+
+	focus.append("g")
+		.attr("class", "y axis")
+		.call(yAxis);
+
+	focus.append("g")
+		.attr("class", "y axis")
+		.call(yAxis)
+		.append("text")
+		.attr("transform", "rotate(-90)")
+		.attr("y", 6)
+		.attr("dy", "0.71em")
+		.style("text-anchor", "end")
+		.text("Price ($)");
+
+	focus2.append("line")
+	.attr("class", "x")
+	.style("stroke", "blue")
+	.style("stroke-dasharray", "3,3")
+	.style("opacity", 0.5)
+	.attr("y1", 0)
+	.attr("y2", height)
+	;
+		
+	focus2.append("circle")
+		.attr("r", 5.5);
+
+	focus2.append("text")
+		.attr("x", 9)
+		.attr("dy", ".35em")
+		.style("font-size","2.5em")
+		;
+
+	svg.append("rect")
+		.attr("class", "overlay")
+		.attr("width", width)
+		.attr("height", height)
+		.attr("transform", "translate(" + margin.left + "," + margin.top + ")")
+		.on("mouseover", function() { focus2.style("display", null); })
+		.on("touchenter", function() { focus2.style("display", null); })
+		.on("mouseout", function() { focus2.style("display", "none"); })
+		.on("touchmove",inspect)
+		.on("mousemove", inspect);
+
+	function inspect() {
+		var x0 = x.invert(d3.mouse(this)[0]),
+			i = bisectDate(data, x0, 1),
+			d0 = data[i - 1],
+			d1 = data[i],
+			d = x0 - d0.datetime > d1.datetime - x0 ? d1 : d0;
+
+		focus2.select("line")
+			.attr("transform", "translate(" + (x(d.datetime)) + "," + (0) + ")")
+			.attr("y1", height)
+			.attr("y2", 0);
+				
+		focus2.select("circle")
+			.attr("transform", "translate(" + (x(d.datetime)) + "," + y(d.price) + ")");
+
+		focus2.select("text")
+			.attr("transform", "translate(" + x(d.datetime) + ",0)")
+			.text(d.price + " " + formatTime(d));
+	}
+				
+	title.html("<center><h1>" + data[0].symbol + " <b><span style='color:steelblue'>" +  data[data.length-1].price + "</span></b>" +  
+	" <span style='color:" + (data[data.length-1].price >= data[data.length-391].price?'green':'red') + " '> " + roundN(data[data.length-1].price - data[data.length-391].price,2) + " (" + roundN(100*( data[data.length-1].price - data[data.length-391].price ) / data[data.length-391].price,2) + "%)</span> "
+	+  monthDayFormat(new Date(data[data.length-1].datetime.getYear(), data[data.length-1].datetime.getMonth(), data[data.length-1].datetime.getDate())) + "</h1></center>");
+
+	// get last 390 minutes of most recent ticker data (9:30AM - 4:30PM)
+	context.append("path")
+		.datum(data.slice(data.length-390,data.length))
+		.attr("class", "area")
+		.attr("d", area);
+
+	context.append("g")
+		.attr("class", "x axis")
+		.attr("transform", "translate(0," + height2 + ")")
+		.call(xAxis2);
+
+	context.append("g")
+		.attr("class", "x brush")
+		.call(brush)
+		.selectAll("rect")
+		.attr("y", -6)
+		.attr("height", height2 + 7);
+	  
+	// pan to view period
+	function pan() {
+		
+		x.domain(brush.empty() ? x2.domain() : brush.extent());
+
+		focus.select(".line")
+			.attr("d", line);
+		focus.select(".x.axis")
+			.call(xAxis);
+
+		var x0 = brush.extent()[0],
+			x1 = brush.extent()[1],
+			i = bisectDate(data, x0, 1),
+			d0 = data[i - 1],
+			d1 = data[i]
+			,
+			i2 = bisectDate(data, x1, 1),
+			d0_1 = data[i2 - 1],
+			d1_1 = data[i2],
+			d = x0 - d0.datetime > 0 ? d1 : d0
+		;
+					
+		if (i2 <= i){
+			i2 = i;
+			d_end = d1_1;
+		}
+		else 
+			d_end = x1 - d0_1.datetime > d1_1.datetime - x1 ? d1_1 : d0_1;
+				
+		prices_arr = data.slice(i,i2+1).map(function(d) { return +d.price; })
+  
+		if  ( ((d_end.datetime-d.datetime)/60000 + 1) < prices_arr.length )
+			prices_arr.pop();
+
+		updown = [];
+
+		if (prices_arr.length > 1){
+			for (i=1;i<prices_arr.length;i++){
+				updown.push(	Math.sign(prices_arr[i] - prices_arr[i-1]) );
+			}
+		}
+	
+		// populate summary statistics table
+		summary.html(
+			"<span style='color:" + (d_end.price >= d.price?'green':'red') + "'>"+ roundN(d_end.price - d.price,2)  + " (" + roundN( 100 * ( prices_arr[prices_arr.length - 1] - prices_arr[0] ) / prices_arr[0],2) + "%)</span> " 
+			+ formatTime(d) + "-" + formatTime(d_end)
+			+ " <b>(" + ((d_end.datetime-d.datetime)/60000) + " minutes)</b><br/><br/>" 
+
+			+ "<table class='summary'>"
+			+ "<tr><td>High</td><td class='stats'>" + d3.max(prices_arr) + "</td></tr>"
+			+ "<tr><td>Low</td><td class='stats'>" + d3.min(prices_arr)  + "</td></tr>"
+			+ "<tr><td>Mean</td><td class='stats'>" + roundN(d3.mean(prices_arr),2)  + "</td></tr>"
+
+			+ "<tr><td>Start Price</td><td class='stats'>" + d.price   + "</td></tr>"
+			+ "<tr><td>End Price</td><td class='stats'>" + d_end.price  + "</td></tr>"
+			+ "<tr><td>Up</td><td class='stats'>" + updownCount(1)  + "</td></tr>"
+			+ "<tr><td>Down</td><td class='stats'>" + updownCount(-1)  + "</td></tr>"
+			+ "<tr><td>Flat</td><td class='stats'>" + updownCount(0)  + "</td></tr>"
+			+ "<tr><td>Up+Flat (%)</td><td class='stats'>" + roundN(100*(updownCount(0)+updownCount(1))/(updownCount(-1)+updownCount(0)+updownCount(1)),2) + "</td></tr>"
+			+ "<tr><td>Up Max Streak</td><td class='stats'>" + maxStreakCount(1)  + "</td></tr>"
+			+ "<tr><td>Down Max Streak</td><td class='stats'>" + maxStreakCount(-1)  + "</td></tr>"
+			+ "<tr><td>Flat Max Streak</td><td class='stats'>" + maxStreakCount(0)  + "</td></tr>"
+			+ "</table>"
+		);
+	} //end of pan()
+});
+
+function type(d) {
+	d.datetime = formatDate.parse(d.datetime);
+	d.price = +d.price;
+	return d;
+}
+
+</script>
+</body>
+</html>
