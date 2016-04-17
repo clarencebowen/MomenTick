@@ -190,7 +190,7 @@ var context = svg.append("g")
 var summary = d3.select("body")
 	.append("div")
 	.attr("class", "summary")
-	.append("text").html("<h2>Touch and Drag Bottom Chart for Intra-Day Analysis</h2>");
+	.append("text").html("<h2>Click and Drag Bottom Chart for Intra-Day Analysis</h2>");
 
 var line = d3.svg.line()
 	.x(function(d) { return x(d.datetime); })
@@ -245,7 +245,8 @@ d3.tsv("quotedata.tsv", type, function(error, data) {
 		.attr("r", 5.5);
 
 	focus2.append("text")
-		.attr("x", 9)
+		//.attr("x", 9)
+		.attr("dx", ".35em")
 		.attr("dy", ".35em")
 		.style("font-size","2.5em")
 		;
@@ -278,6 +279,7 @@ d3.tsv("quotedata.tsv", type, function(error, data) {
 
 		focus2.select("text")
 			.attr("transform", "translate(" + x(d.datetime) + ",0)")
+			.attr("dx", x(d.datetime) > .8*width?"-7.05em":".35em")
 			.text(d.price + " " + formatTime(d));
 	}
 				
